@@ -1,0 +1,12 @@
+streamlit>=1.30.0
+requests
+pypdf
+PyPDF2
+beautifulsoup4
+lxml
+html5lib
+ebooklib
+Pillow
+PTable
+text-unidecode
+PyCryptodome

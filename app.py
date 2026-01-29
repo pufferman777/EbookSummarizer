@@ -4,19 +4,16 @@ A user-friendly interface for summarizing books chapter by chapter using local L
 """
 
 import os
-import sys
-import csv
 import json
 import time
 import re
-import shutil
 import socket
 import tempfile
 import traceback
 import requests
 import streamlit as st
 from pathlib import Path
-from typing import Optional, List, Tuple, Generator
+from typing import List, Tuple
 
 # PDF/EPUB processing
 import pypdf
@@ -127,22 +124,6 @@ def generate_summary(model: str, text: str, prompt: str) -> Tuple[str, float]:
         return output, elapsed
     except Exception as e:
         return f"Error: {str(e)}", time.time() - start_time
-
-def generate_title(model: str, text: str) -> str:
-    """Generate a title for a chunk of text."""
-    payload = {
-        "model": model,
-        "prompt": f"```{text[:500]}```\n\nWrite 8-11 words describing this text.",
-        "stream": False
-    }
-
-    try:
-        response = requests.post(f"{OLLAMA_API_BASE}/generate", json=payload, timeout=60)
-        if response.status_code == 200:
-            return response.json().get("response", "").strip().split('\n')[0]
-    except:
-        pass
-    return text[:100].strip() + "..."
 
 # -----------------------------
 # File Processing
@@ -422,12 +403,23 @@ def main():
             prefs["model"] = selected_model
             save_prefs(prefs)
 
-        # Prompt style
+        # Prompt style (with persistence)
+        prompt_styles = list(PROMPTS.keys())
+        saved_style = prefs.get("style")
+        style_idx = 0
+        if saved_style and saved_style in prompt_styles:
+            style_idx = prompt_styles.index(saved_style)
+
         prompt_style = st.selectbox(
             "Summary Style",
-            list(PROMPTS.keys()),
+            prompt_styles,
+            index=style_idx,
             help="Choose how you want the summaries formatted"
         )
+
+        if prompt_style != saved_style:
+            prefs["style"] = prompt_style
+            save_prefs(prefs)
 
         # Chunk size
         chunk_size = st.slider(
@@ -451,7 +443,7 @@ def main():
     )
 
     if uploaded_file:
-        st.info(f"File received: {uploaded_file.name} ({uploaded_file.size:,} bytes)")
+        st.caption(f"📄 {uploaded_file.name} ({uploaded_file.size:,} bytes)")
 
         # Initialize session state
         if 'processed_file' not in st.session_state:
@@ -500,9 +492,6 @@ def main():
             prompt_text = PROMPTS[prompt_style]["prompt"]
             progress_bar = st.progress(0)
             status_text = st.empty()
-
-            # Results container
-            results_container = st.container()
 
             total_chunks = 0
             processed_chunks = 0

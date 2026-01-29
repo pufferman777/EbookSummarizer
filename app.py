@@ -282,6 +282,19 @@ def process_uploaded_file(uploaded_file, work_dir: str) -> Tuple[List[dict], str
     except Exception as e:
         return [], str(e)
 
+def format_time(seconds: float) -> str:
+    """Format seconds into human-readable time string."""
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    elif seconds < 3600:
+        mins = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{mins}m {secs}s"
+    else:
+        hours = int(seconds // 3600)
+        mins = int((seconds % 3600) // 60)
+        return f"{hours}h {mins}m"
+
 def save_summary_to_downloads(book_name: str, content: str, style_alias: str) -> str:
     """Save summary to Downloads folder and return the file path."""
     downloads_dir = Path.home() / "Downloads"
@@ -439,6 +452,7 @@ def main():
 
             total_chunks = 0
             processed_chunks = 0
+            chunk_times = []
 
             # Count total chunks
             for ch in chapters:
@@ -447,16 +461,30 @@ def main():
             all_summaries = []
 
             for i, chapter in enumerate(chapters):
-                status_text.text(f"Processing chapter {i+1}/{len(chapters)}: {chapter['title'][:50]}...")
-
                 chunks = chunk_text(chapter['text'], chunk_size)
                 chapter_summaries = []
 
                 for j, chunk in enumerate(chunks):
                     summary, elapsed = generate_summary(selected_model, chunk, prompt_text)
                     chapter_summaries.append(summary)
+                    chunk_times.append(elapsed)
                     processed_chunks += 1
-                    progress_bar.progress(processed_chunks / total_chunks)
+
+                    # Calculate progress and ETA
+                    progress_pct = processed_chunks / total_chunks
+                    progress_bar.progress(progress_pct)
+
+                    avg_time = sum(chunk_times) / len(chunk_times)
+                    remaining_chunks = total_chunks - processed_chunks
+                    eta_seconds = avg_time * remaining_chunks
+
+                    pct_display = int(progress_pct * 100)
+                    eta_display = format_time(eta_seconds) if remaining_chunks > 0 else "almost done"
+
+                    status_text.text(
+                        f"Chapter {i+1}/{len(chapters)}: {chapter['title'][:40]}... | "
+                        f"{pct_display}% | ETA: {eta_display}"
+                    )
 
                 # Combine chunk summaries
                 combined_summary = "\n\n".join(chapter_summaries)

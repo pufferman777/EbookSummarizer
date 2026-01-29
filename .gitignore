@@ -30,9 +30,10 @@ Thumbs.db
 tmp/
 temp/
 
-# Streamlit
-.streamlit/
+# Streamlit (keep config.toml for remote access settings)
+.streamlit/secrets.toml
 
 # Output files (user downloads these)
 *.md
 !README.md
+.user_prefs.json

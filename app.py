@@ -6,10 +6,13 @@ A user-friendly interface for summarizing books chapter by chapter using local L
 import os
 import sys
 import csv
+import json
 import time
 import re
 import shutil
+import socket
 import tempfile
+import traceback
 import requests
 import streamlit as st
 from pathlib import Path
@@ -26,6 +29,25 @@ from ebooklib import epub
 from lib.epubunz import extract_html_files
 from lib.epubsplit import SplitEpub
 from lib.pdf_splitter import split_pdf, get_toc, prepare_page_ranges
+
+# -----------------------------
+# User Preferences
+# -----------------------------
+
+PREFS_FILE = Path(__file__).parent / ".user_prefs.json"
+
+def load_prefs() -> dict:
+    """Load user preferences from file."""
+    if PREFS_FILE.exists():
+        try:
+            return json.loads(PREFS_FILE.read_text())
+        except:
+            pass
+    return {}
+
+def save_prefs(prefs: dict) -> None:
+    """Save user preferences to file."""
+    PREFS_FILE.write_text(json.dumps(prefs, indent=2))
 
 # -----------------------------
 # Configuration
@@ -280,7 +302,8 @@ def process_uploaded_file(uploaded_file, work_dir: str) -> Tuple[List[dict], str
         return chapters, ""
 
     except Exception as e:
-        return [], str(e)
+        tb = traceback.format_exc()
+        return [], f"{str(e)}\n\nTraceback:\n{tb}"
 
 def format_time(seconds: float) -> str:
     """Format seconds into human-readable time string."""
@@ -295,14 +318,27 @@ def format_time(seconds: float) -> str:
         mins = int((seconds % 3600) // 60)
         return f"{hours}h {mins}m"
 
+def get_summaries_dir() -> Path:
+    """Get the summaries directory, trying Dropbox first, then Downloads."""
+    dropbox_summaries = (
+        Path.home() / "Dropbox" /
+        "1. Kai Gao - Personal and Confidential - Dropbox" /
+        "Personal" / "Trading" / "Readings" / "Summaries"
+    )
+    if dropbox_summaries.exists():
+        return dropbox_summaries
+    # Fallback to Downloads
+    downloads = Path.home() / "Downloads"
+    downloads.mkdir(exist_ok=True)
+    return downloads
+
 def save_summary_to_downloads(book_name: str, content: str, style_alias: str) -> str:
-    """Save summary to Downloads folder and return the file path."""
-    downloads_dir = Path.home() / "Downloads"
-    downloads_dir.mkdir(exist_ok=True)
+    """Save summary to Summaries folder (Dropbox if available, else Downloads)."""
+    output_dir = get_summaries_dir()
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     filename = f"{book_name}_{style_alias}_{timestamp}.md"
-    filepath = downloads_dir / filename
+    filepath = output_dir / filename
 
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write(f"# {book_name} - Summary\n\n")
@@ -352,6 +388,7 @@ def main():
 
     # Sidebar configuration
     with st.sidebar:
+        st.title(socket.gethostname().capitalize())
         st.header("Configuration")
 
         # Model selection
@@ -366,11 +403,24 @@ def main():
             0 if any(p in m.lower() for p in preferred) else 1, m
         ))
 
+        # Load saved model preference
+        prefs = load_prefs()
+        saved_model = prefs.get("model")
+        default_idx = 0
+        if saved_model and saved_model in sorted_models:
+            default_idx = sorted_models.index(saved_model)
+
         selected_model = st.selectbox(
             "Select Model",
             sorted_models,
+            index=default_idx,
             help="Choose the LLM to use for summarization"
         )
+
+        # Save model preference when changed
+        if selected_model != saved_model:
+            prefs["model"] = selected_model
+            save_prefs(prefs)
 
         # Prompt style
         prompt_style = st.selectbox(
@@ -394,12 +444,15 @@ def main():
 
     # Main area - File upload
     uploaded_file = st.file_uploader(
-        "Upload your book",
+        "Drag and drop your book here, or click to browse",
         type=['pdf', 'epub'],
-        help="Supports PDF and EPUB formats"
+        help="Supports PDF and EPUB formats",
+        key="book_uploader"
     )
 
     if uploaded_file:
+        st.info(f"File received: {uploaded_file.name} ({uploaded_file.size:,} bytes)")
+
         # Initialize session state
         if 'processed_file' not in st.session_state:
             st.session_state.processed_file = None
@@ -419,6 +472,7 @@ def main():
                     st.stop()
 
                 st.session_state.processed_file = uploaded_file.name
+                st.session_state.book_name = Path(uploaded_file.name).stem
                 st.session_state.chapters = chapters
                 st.session_state.summaries = {}
                 st.session_state.work_dir = work_dir
@@ -505,25 +559,29 @@ def main():
 
             status_text.text(f"✅ Summarization complete! Saved to: {saved_path}")
 
-        # Display results
-        if st.session_state.summaries:
-            st.divider()
-            st.subheader("📝 Summaries")
+    # Display results (outside of file upload block so it persists)
+    if 'summaries' in st.session_state and st.session_state.summaries:
+        st.divider()
+        st.subheader("📝 Summaries")
 
-            # Download button
-            if 'final_output' in st.session_state:
-                book_name = Path(uploaded_file.name).stem
-                st.download_button(
-                    label="📥 Download All Summaries (Markdown)",
-                    data=f"# {book_name} - Summary\n\n{st.session_state.final_output}",
-                    file_name=f"{book_name}_summary.md",
-                    mime="text/markdown"
-                )
+        # Download button
+        if 'final_output' in st.session_state and 'book_name' in st.session_state:
+            book_name = st.session_state.book_name
+            download_content = f"# {book_name} - Summary\n\n{st.session_state.final_output}"
+            st.download_button(
+                label="📥 Download All Summaries (Markdown)",
+                data=download_content,
+                file_name=f"{book_name}_summary.md",
+                mime="text/markdown",
+                key="download_summary"
+            )
+            if 'saved_path' in st.session_state:
+                st.caption(f"Also saved to: {st.session_state.saved_path}")
 
-            # Display each chapter summary
-            for title, summary in st.session_state.summaries.items():
-                with st.expander(f"📖 {title}", expanded=False):
-                    st.markdown(summary)
+        # Display each chapter summary
+        for title, summary in st.session_state.summaries.items():
+            with st.expander(f"📖 {title}", expanded=False):
+                st.markdown(summary)
 
 if __name__ == "__main__":
     main()

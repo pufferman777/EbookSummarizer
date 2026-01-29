@@ -11,4 +11,4 @@ elif [ -d "$HOME/Documents/PythonProject/EbookSummarizer_venv" ]; then
     source "$HOME/Documents/PythonProject/EbookSummarizer_venv/bin/activate"
 fi
 
-streamlit run app.py --server.port 3002 --server.address localhost --server.headless true
+streamlit run app.py --server.port 3002 --server.address 0.0.0.0 --server.headless true

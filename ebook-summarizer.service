@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 # UPDATE THESE PATHS to match your setup:
 WorkingDirectory=%h/EbookSummarizer
-ExecStart=%h/EbookSummarizer/venv/bin/streamlit run app.py --server.port 3002 --server.address localhost --server.headless true
+ExecStart=%h/EbookSummarizer/venv/bin/streamlit run app.py --server.port 3002 --server.address 0.0.0.0 --server.headless true
 Restart=on-failure
 RestartSec=5
 

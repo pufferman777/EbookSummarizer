@@ -34,7 +34,23 @@ from lib.pdf_splitter import split_pdf, get_toc, prepare_page_ranges
 OLLAMA_API_BASE = "http://localhost:11434/api"
 
 PROMPTS = {
-    "Bulleted Notes (Default)": {
+    "Trading Setups": {
+        "alias": "trading",
+        "prompt": """Analyze this text for actionable trading setups and strategies. Extract and list:
+
+1. **Technical Setups**: Chart patterns, indicators, entry/exit signals, price action patterns, support/resistance levels, timeframes
+2. **Fundamental Setups**: Earnings plays, sector rotations, macroeconomic triggers, valuation-based entries
+3. **Other Setups**: Sentiment-based, seasonal patterns, intermarket relationships, risk management rules
+
+For each setup found, provide:
+- Setup name/type
+- Entry criteria (specific conditions that must be met)
+- Exit criteria (profit targets, stop losses)
+- Risk management notes if mentioned
+
+If the text doesn't contain trading setups, summarize any market insights or principles that could inform trading decisions."""
+    },
+    "Bulleted Notes": {
         "alias": "bnotes",
         "prompt": "Write comprehensive bulleted notes summarizing the provided text, with headings and terms in bold."
     },
@@ -266,6 +282,22 @@ def process_uploaded_file(uploaded_file, work_dir: str) -> Tuple[List[dict], str
     except Exception as e:
         return [], str(e)
 
+def save_summary_to_downloads(book_name: str, content: str, style_alias: str) -> str:
+    """Save summary to Downloads folder and return the file path."""
+    downloads_dir = Path.home() / "Downloads"
+    downloads_dir.mkdir(exist_ok=True)
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"{book_name}_{style_alias}_{timestamp}.md"
+    filepath = downloads_dir / filename
+
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write(f"# {book_name} - Summary\n\n")
+        f.write(f"*Style: {style_alias} | Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}*\n\n---\n\n")
+        f.write(content)
+
+    return str(filepath)
+
 def chunk_text(text: str, max_tokens: int = 2000) -> List[str]:
     """Split text into chunks of approximately max_tokens."""
     # Rough estimate: 1 token ≈ 4 characters
@@ -433,10 +465,17 @@ def main():
                 all_summaries.append(f"## {chapter['title']}\n\n{combined_summary}")
 
             progress_bar.progress(1.0)
-            status_text.text("✅ Summarization complete!")
 
             # Store final output
             st.session_state.final_output = "\n\n---\n\n".join(all_summaries)
+
+            # Auto-save to Downloads
+            book_name = Path(uploaded_file.name).stem
+            style_alias = PROMPTS[prompt_style]["alias"]
+            saved_path = save_summary_to_downloads(book_name, st.session_state.final_output, style_alias)
+            st.session_state.saved_path = saved_path
+
+            status_text.text(f"✅ Summarization complete! Saved to: {saved_path}")
 
         # Display results
         if st.session_state.summaries:

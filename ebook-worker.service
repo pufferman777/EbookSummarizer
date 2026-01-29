@@ -1,0 +1,15 @@
+[Unit]
+Description=Ebook Summarizer Background Worker
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/EbookSummarizer
+ExecStart=%h/EbookSummarizer/venv/bin/python3 -u worker.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

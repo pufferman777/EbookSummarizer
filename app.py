@@ -13,6 +13,7 @@ import requests
 import streamlit as st
 from pathlib import Path
 from typing import List, Tuple
+from datetime import datetime
 
 # PDF/EPUB processing
 import pypdf
@@ -27,29 +28,15 @@ from lib.epubsplit import SplitEpub
 from lib.pdf_splitter import split_pdf, get_toc, prepare_page_ranges
 
 # -----------------------------
-# User Preferences
-# -----------------------------
-
-PREFS_FILE = Path(__file__).parent / ".user_prefs.json"
-
-def load_prefs() -> dict:
-    """Load user preferences from file."""
-    if PREFS_FILE.exists():
-        try:
-            return json.loads(PREFS_FILE.read_text())
-        except:
-            pass
-    return {}
-
-def save_prefs(prefs: dict) -> None:
-    """Save user preferences to file."""
-    PREFS_FILE.write_text(json.dumps(prefs, indent=2))
-
-# -----------------------------
 # Configuration
 # -----------------------------
 
 OLLAMA_API_BASE = "http://localhost:11434/api"
+JOBS_DIR = Path(__file__).parent / "jobs"
+PREFS_FILE = Path(__file__).parent / ".user_prefs.json"
+
+# Ensure jobs directory exists
+JOBS_DIR.mkdir(exist_ok=True)
 
 PROMPTS = {
     "Trading Setups": {
@@ -91,6 +78,116 @@ If the text doesn't contain trading setups, summarize any market insights or pri
 }
 
 # -----------------------------
+# User Preferences
+# -----------------------------
+
+def load_prefs() -> dict:
+    """Load user preferences from file."""
+    if PREFS_FILE.exists():
+        try:
+            return json.loads(PREFS_FILE.read_text())
+        except:
+            pass
+    return {}
+
+def save_prefs(prefs: dict) -> None:
+    """Save user preferences to file."""
+    PREFS_FILE.write_text(json.dumps(prefs, indent=2))
+
+# -----------------------------
+# Job Management
+# -----------------------------
+
+def create_job(book_name: str, chapters: List[dict], model: str, prompt: str,
+               style_alias: str, chunk_size: int) -> str:
+    """Create a new summarization job and return job ID."""
+    job_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{book_name[:30].replace(' ', '_')}"
+    job_dir = JOBS_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write job file
+    job_data = {
+        "book_name": book_name,
+        "chapters": chapters,
+        "model": model,
+        "prompt": prompt,
+        "style_alias": style_alias,
+        "chunk_size": chunk_size,
+        "created_at": datetime.now().isoformat()
+    }
+
+    with open(job_dir / "job.json", 'w') as f:
+        json.dump(job_data, f, indent=2)
+
+    # Write initial status
+    status_data = {
+        "state": "pending",
+        "created_at": datetime.now().isoformat(),
+        "progress_pct": 0,
+        "current_chapter": 0,
+        "total_chapters": len(chapters)
+    }
+
+    with open(job_dir / "status.json", 'w') as f:
+        json.dump(status_data, f, indent=2)
+
+    return job_id
+
+def get_job_status(job_id: str) -> dict:
+    """Get current status of a job."""
+    status_file = JOBS_DIR / job_id / "status.json"
+    if status_file.exists():
+        with open(status_file, 'r') as f:
+            return json.load(f)
+    return {"state": "not_found"}
+
+def get_job_results(job_id: str) -> dict:
+    """Get results of a completed job."""
+    results_file = JOBS_DIR / job_id / "results.json"
+    if results_file.exists():
+        with open(results_file, 'r') as f:
+            return json.load(f)
+    return {"chapters": []}
+
+def get_all_jobs() -> List[dict]:
+    """Get all jobs with their status."""
+    jobs = []
+    if not JOBS_DIR.exists():
+        return jobs
+
+    for job_dir in sorted(JOBS_DIR.iterdir(), reverse=True):
+        if not job_dir.is_dir():
+            continue
+
+        job_file = job_dir / "job.json"
+        status_file = job_dir / "status.json"
+
+        if job_file.exists() and status_file.exists():
+            try:
+                with open(job_file, 'r') as f:
+                    job = json.load(f)
+                with open(status_file, 'r') as f:
+                    status = json.load(f)
+
+                jobs.append({
+                    "job_id": job_dir.name,
+                    "book_name": job.get("book_name", "Unknown"),
+                    "created_at": job.get("created_at", ""),
+                    **status
+                })
+            except:
+                pass
+
+    return jobs
+
+def delete_job(job_id: str):
+    """Delete a job and its files."""
+    import shutil
+    job_dir = JOBS_DIR / job_id
+    if job_dir.exists():
+        shutil.rmtree(job_dir)
+
+# -----------------------------
 # Ollama Integration
 # -----------------------------
 
@@ -104,25 +201,6 @@ def get_ollama_models() -> List[str]:
     except Exception as e:
         st.warning(f"Could not connect to Ollama: {e}")
     return []
-
-def generate_summary(model: str, text: str, prompt: str) -> Tuple[str, float]:
-    """Generate summary using Ollama API."""
-    payload = {
-        "model": model,
-        "prompt": f"```{text}```\n\n{prompt}",
-        "stream": False
-    }
-
-    start_time = time.time()
-    try:
-        response = requests.post(f"{OLLAMA_API_BASE}/generate", json=payload, timeout=300)
-        response.raise_for_status()
-        result = response.json()
-        output = result.get("response", "").strip()
-        elapsed = time.time() - start_time
-        return output, elapsed
-    except Exception as e:
-        return f"Error: {str(e)}", time.time() - start_time
 
 # -----------------------------
 # File Processing
@@ -285,72 +363,21 @@ def process_uploaded_file(uploaded_file, work_dir: str) -> Tuple[List[dict], str
         tb = traceback.format_exc()
         return [], f"{str(e)}\n\nTraceback:\n{tb}"
 
-def format_time(seconds: float) -> str:
-    """Format seconds into human-readable time string."""
-    if seconds < 60:
-        return f"{int(seconds)}s"
-    elif seconds < 3600:
-        mins = int(seconds // 60)
-        secs = int(seconds % 60)
-        return f"{mins}m {secs}s"
-    else:
-        hours = int(seconds // 3600)
-        mins = int((seconds % 3600) // 60)
-        return f"{hours}h {mins}m"
+# -----------------------------
+# Worker Status
+# -----------------------------
 
-def get_summaries_dir() -> Path:
-    """Get the summaries directory, trying Dropbox first, then Downloads."""
-    dropbox_summaries = (
-        Path.home() / "Dropbox" /
-        "1. Kai Gao - Personal and Confidential - Dropbox" /
-        "Personal" / "Trading" / "Readings" / "Summaries"
-    )
-    if dropbox_summaries.exists():
-        return dropbox_summaries
-    # Fallback to Downloads
-    downloads = Path.home() / "Downloads"
-    downloads.mkdir(exist_ok=True)
-    return downloads
-
-def save_summary_to_downloads(book_name: str, content: str, style_alias: str) -> str:
-    """Save summary to Summaries folder (Dropbox if available, else Downloads)."""
-    output_dir = get_summaries_dir()
-
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"{book_name}_{style_alias}_{timestamp}.md"
-    filepath = output_dir / filename
-
-    with open(filepath, 'w', encoding='utf-8') as f:
-        f.write(f"# {book_name} - Summary\n\n")
-        f.write(f"*Style: {style_alias} | Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}*\n\n---\n\n")
-        f.write(content)
-
-    return str(filepath)
-
-def chunk_text(text: str, max_tokens: int = 2000) -> List[str]:
-    """Split text into chunks of approximately max_tokens."""
-    # Rough estimate: 1 token ≈ 4 characters
-    max_chars = max_tokens * 4
-
-    if len(text) <= max_chars:
-        return [text]
-
-    chunks = []
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    current_chunk = ""
-
-    for sentence in sentences:
-        if len(current_chunk) + len(sentence) <= max_chars:
-            current_chunk += sentence + " "
-        else:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            current_chunk = sentence + " "
-
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-
-    return chunks if chunks else [text]
+def is_worker_running() -> bool:
+    """Check if the background worker is running."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", "ebook-worker.service"],
+            capture_output=True, text=True, timeout=5
+        )
+        return result.stdout.strip() == "active"
+    except:
+        return False
 
 # -----------------------------
 # Streamlit App
@@ -381,6 +408,15 @@ def main():
                 font-weight: 700;
             '>{username}</h1>
         """, unsafe_allow_html=True)
+        st.divider()
+
+        # Worker status
+        if is_worker_running():
+            st.success("🟢 Worker: Running")
+        else:
+            st.error("🔴 Worker: Stopped")
+            st.caption("Start with: `systemctl --user start ebook-worker`")
+
         st.divider()
         st.header("Configuration")
 
@@ -444,145 +480,172 @@ def main():
         )
 
         st.divider()
-        st.caption("**Tip:** For 500+ page books, use smaller models (7B-13B) for faster processing.")
+        st.caption("**Tip:** Jobs run in background - you can close this tab and check back later!")
 
-    # Main area - File upload
-    uploaded_file = st.file_uploader(
-        "Drag and drop your book here, or click to browse",
-        type=['pdf', 'epub'],
-        help="Supports PDF and EPUB formats",
-        key="book_uploader"
-    )
+    # Create tabs for different views
+    tab1, tab2 = st.tabs(["📤 New Job", "📋 Job Queue"])
 
-    if uploaded_file:
-        st.caption(f"📄 {uploaded_file.name} ({uploaded_file.size:,} bytes)")
+    with tab1:
+        # Main area - File upload
+        uploaded_file = st.file_uploader(
+            "Drag and drop your book here, or click to browse",
+            type=['pdf', 'epub'],
+            help="Supports PDF and EPUB formats",
+            key="book_uploader"
+        )
 
-        # Initialize session state
-        if 'processed_file' not in st.session_state:
-            st.session_state.processed_file = None
-        if 'chapters' not in st.session_state:
-            st.session_state.chapters = []
-        if 'summaries' not in st.session_state:
-            st.session_state.summaries = {}
+        if uploaded_file:
+            st.caption(f"📄 {uploaded_file.name} ({uploaded_file.size:,} bytes)")
 
-        # Process file if new
-        if st.session_state.processed_file != uploaded_file.name:
-            with st.spinner("Extracting chapters..."):
-                work_dir = tempfile.mkdtemp()
-                chapters, error = process_uploaded_file(uploaded_file, work_dir)
+            # Initialize session state
+            if 'processed_file' not in st.session_state:
+                st.session_state.processed_file = None
+            if 'chapters' not in st.session_state:
+                st.session_state.chapters = []
 
-                if error:
-                    st.error(f"Error processing file: {error}")
-                    st.stop()
+            # Process file if new
+            if st.session_state.processed_file != uploaded_file.name:
+                with st.spinner("Extracting chapters..."):
+                    work_dir = tempfile.mkdtemp()
+                    chapters, error = process_uploaded_file(uploaded_file, work_dir)
 
-                st.session_state.processed_file = uploaded_file.name
-                st.session_state.book_name = Path(uploaded_file.name).stem
-                st.session_state.chapters = chapters
-                st.session_state.summaries = {}
-                st.session_state.work_dir = work_dir
+                    if error:
+                        st.error(f"Error processing file: {error}")
+                        st.stop()
 
-        chapters = st.session_state.chapters
+                    st.session_state.processed_file = uploaded_file.name
+                    st.session_state.book_name = Path(uploaded_file.name).stem
+                    st.session_state.chapters = chapters
 
-        if not chapters:
-            st.warning("No chapters found in the document.")
-            st.stop()
+            chapters = st.session_state.chapters
 
-        # Display chapter info
-        st.success(f"Found **{len(chapters)}** chapters")
+            if not chapters:
+                st.warning("No chapters found in the document.")
+                st.stop()
 
-        # Chapter preview
-        with st.expander("Preview Chapters", expanded=False):
-            for i, ch in enumerate(chapters):
-                st.write(f"**{i+1}.** {ch['title']} ({len(ch['text']):,} chars)")
+            # Display chapter info
+            st.success(f"Found **{len(chapters)}** chapters")
 
-        # Summarize button
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            start_btn = st.button("🚀 Start Summarization", type="primary", use_container_width=True)
+            # Chapter preview
+            with st.expander("Preview Chapters", expanded=False):
+                for i, ch in enumerate(chapters):
+                    st.write(f"**{i+1}.** {ch['title']} ({len(ch['text']):,} chars)")
 
-        if start_btn:
-            prompt_text = PROMPTS[prompt_style]["prompt"]
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-
-            total_chunks = 0
-            processed_chunks = 0
-            chunk_times = []
-
-            # Count total chunks
-            for ch in chapters:
-                total_chunks += len(chunk_text(ch['text'], chunk_size))
-
-            all_summaries = []
-
-            for i, chapter in enumerate(chapters):
-                chunks = chunk_text(chapter['text'], chunk_size)
-                chapter_summaries = []
-
-                for j, chunk in enumerate(chunks):
-                    summary, elapsed = generate_summary(selected_model, chunk, prompt_text)
-                    chapter_summaries.append(summary)
-                    chunk_times.append(elapsed)
-                    processed_chunks += 1
-
-                    # Calculate progress and ETA
-                    progress_pct = processed_chunks / total_chunks
-                    progress_bar.progress(progress_pct)
-
-                    avg_time = sum(chunk_times) / len(chunk_times)
-                    remaining_chunks = total_chunks - processed_chunks
-                    eta_seconds = avg_time * remaining_chunks
-
-                    pct_display = int(progress_pct * 100)
-                    eta_display = format_time(eta_seconds) if remaining_chunks > 0 else "almost done"
-
-                    status_text.text(
-                        f"Chapter {i+1}/{len(chapters)}: {chapter['title'][:40]}... | "
-                        f"{pct_display}% | ETA: {eta_display}"
+            # Submit job button
+            if st.button("🚀 Start Summarization", type="primary", use_container_width=True):
+                if not is_worker_running():
+                    st.error("Worker is not running! Start it first with: `systemctl --user start ebook-worker`")
+                else:
+                    # Create job
+                    job_id = create_job(
+                        book_name=st.session_state.book_name,
+                        chapters=chapters,
+                        model=selected_model,
+                        prompt=PROMPTS[prompt_style]["prompt"],
+                        style_alias=PROMPTS[prompt_style]["alias"],
+                        chunk_size=chunk_size
                     )
+                    st.success(f"✅ Job submitted! ID: `{job_id}`")
+                    st.info("Switch to **Job Queue** tab to monitor progress. You can close this tab - the job will continue in the background.")
+                    st.session_state.active_job = job_id
 
-                # Combine chunk summaries
-                combined_summary = "\n\n".join(chapter_summaries)
-                st.session_state.summaries[chapter['title']] = combined_summary
+    with tab2:
+        st.subheader("Job Queue")
 
-                all_summaries.append(f"## {chapter['title']}\n\n{combined_summary}")
+        # Refresh button
+        if st.button("🔄 Refresh", key="refresh_jobs"):
+            st.rerun()
 
-            progress_bar.progress(1.0)
+        # Auto-refresh for running jobs
+        jobs = get_all_jobs()
+        running_jobs = [j for j in jobs if j.get("state") == "running"]
 
-            # Store final output
-            st.session_state.final_output = "\n\n---\n\n".join(all_summaries)
+        if running_jobs:
+            st.caption("⏳ Auto-refreshing every 5 seconds while jobs are running...")
+            time.sleep(0.1)  # Small delay to prevent UI flicker
+            st.empty()
 
-            # Auto-save to Downloads
-            book_name = Path(uploaded_file.name).stem
-            style_alias = PROMPTS[prompt_style]["alias"]
-            saved_path = save_summary_to_downloads(book_name, st.session_state.final_output, style_alias)
-            st.session_state.saved_path = saved_path
+        if not jobs:
+            st.info("No jobs yet. Upload a book and start a summarization!")
+        else:
+            for job in jobs:
+                job_id = job["job_id"]
+                state = job.get("state", "unknown")
+                book_name = job.get("book_name", "Unknown")
+                progress = job.get("progress_pct", 0)
 
-            status_text.text(f"✅ Summarization complete! Saved to: {saved_path}")
+                # Job card
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 1, 1])
 
-    # Display results (outside of file upload block so it persists)
-    if 'summaries' in st.session_state and st.session_state.summaries:
-        st.divider()
-        st.subheader("📝 Summaries")
+                    with col1:
+                        if state == "completed":
+                            st.markdown(f"✅ **{book_name}**")
+                        elif state == "running":
+                            st.markdown(f"⏳ **{book_name}**")
+                        elif state == "pending":
+                            st.markdown(f"⏸️ **{book_name}**")
+                        else:
+                            st.markdown(f"❓ **{book_name}**")
 
-        # Download button
-        if 'final_output' in st.session_state and 'book_name' in st.session_state:
-            book_name = st.session_state.book_name
-            download_content = f"# {book_name} - Summary\n\n{st.session_state.final_output}"
-            st.download_button(
-                label="📥 Download All Summaries (Markdown)",
-                data=download_content,
-                file_name=f"{book_name}_summary.md",
-                mime="text/markdown",
-                key="download_summary"
-            )
-            if 'saved_path' in st.session_state:
-                st.caption(f"Also saved to: {st.session_state.saved_path}")
+                    with col2:
+                        if state == "running":
+                            eta = job.get("eta", "calculating...")
+                            st.caption(f"ETA: {eta}")
+                        elif state == "completed":
+                            st.caption("Done!")
+                        else:
+                            st.caption(state.capitalize())
 
-        # Display each chapter summary
-        for title, summary in st.session_state.summaries.items():
-            with st.expander(f"📖 {title}", expanded=False):
-                st.markdown(summary)
+                    with col3:
+                        if state == "completed":
+                            if st.button("🗑️", key=f"del_{job_id}", help="Delete job"):
+                                delete_job(job_id)
+                                st.rerun()
+
+                    # Progress bar
+                    if state in ["running", "pending"]:
+                        st.progress(progress / 100)
+                        current_ch = job.get("current_chapter", 0)
+                        total_ch = job.get("total_chapters", 0)
+                        current_title = job.get("current_chapter_title", "")
+                        if current_title:
+                            st.caption(f"Chapter {current_ch}/{total_ch}: {current_title[:50]}...")
+
+                    # Show results for completed jobs
+                    if state == "completed":
+                        output_path = job.get("output_path", "")
+                        if output_path:
+                            st.caption(f"📁 Saved to: `{output_path}`")
+
+                        # Show summaries
+                        results = get_job_results(job_id)
+                        if results.get("chapters"):
+                            with st.expander("📖 View Summaries", expanded=False):
+                                for ch in results["chapters"]:
+                                    st.markdown(f"### {ch['title']}")
+                                    st.markdown(ch['summary'])
+                                    st.divider()
+
+                            # Download button
+                            all_content = "\n\n---\n\n".join([
+                                f"## {ch['title']}\n\n{ch['summary']}"
+                                for ch in results["chapters"]
+                            ])
+                            st.download_button(
+                                "📥 Download Summary",
+                                data=f"# {book_name} - Summary\n\n{all_content}",
+                                file_name=f"{book_name}_summary.md",
+                                mime="text/markdown",
+                                key=f"dl_{job_id}"
+                            )
+
+                    st.divider()
+
+        # Auto-refresh for running jobs using Streamlit's native rerun
+        if running_jobs:
+            time.sleep(5)
+            st.rerun()
 
 if __name__ == "__main__":
     main()

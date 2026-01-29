@@ -7,7 +7,6 @@ import os
 import json
 import time
 import re
-import socket
 import tempfile
 import traceback
 import requests
@@ -369,7 +368,20 @@ def main():
 
     # Sidebar configuration
     with st.sidebar:
-        st.title(socket.gethostname().capitalize())
+        # Display username centered with gradient
+        username = Path.home().name.capitalize()
+        st.markdown(f"""
+            <h1 style='
+                text-align: center;
+                background: linear-gradient(90deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                font-size: 2.5rem;
+                font-weight: 700;
+            '>{username}</h1>
+        """, unsafe_allow_html=True)
+        st.divider()
         st.header("Configuration")
 
         # Model selection

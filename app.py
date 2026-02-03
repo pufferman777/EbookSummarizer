@@ -579,6 +579,34 @@ def main():
             st.caption("Start with: `systemctl --user start ebook-worker`")
 
         st.divider()
+
+        # Batch processing directories (moved up for visibility)
+        with st.expander("📁 Batch Directories", expanded=False):
+            # Load saved directories or use defaults
+            saved_input_dir = prefs.get("input_dir", DEFAULT_INPUT_DIR)
+            saved_output_dir = prefs.get("output_dir", DEFAULT_OUTPUT_DIR)
+
+            input_dir = st.text_input(
+                "Input Directory",
+                value=saved_input_dir,
+                help="Directory containing PDF/EPUB files to process"
+            )
+
+            output_dir = st.text_input(
+                "Output Directory",
+                value=saved_output_dir,
+                help="Directory where summaries will be saved"
+            )
+
+            # Save directory preferences when changed
+            if input_dir != saved_input_dir:
+                prefs["input_dir"] = input_dir
+                save_prefs(prefs)
+            if output_dir != saved_output_dir:
+                prefs["output_dir"] = output_dir
+                save_prefs(prefs)
+
+        st.divider()
         st.header("Configuration")
 
         # Model selection
@@ -639,35 +667,6 @@ def main():
             step=250,
             help="Larger chunks = more context but slower processing"
         )
-
-        st.divider()
-
-        # Batch processing directories
-        st.header("Batch Directories")
-
-        # Load saved directories or use defaults
-        saved_input_dir = prefs.get("input_dir", DEFAULT_INPUT_DIR)
-        saved_output_dir = prefs.get("output_dir", DEFAULT_OUTPUT_DIR)
-
-        input_dir = st.text_input(
-            "Input Directory",
-            value=saved_input_dir,
-            help="Directory containing PDF/EPUB files to process"
-        )
-
-        output_dir = st.text_input(
-            "Output Directory",
-            value=saved_output_dir,
-            help="Directory where summaries will be saved"
-        )
-
-        # Save directory preferences when changed
-        if input_dir != saved_input_dir:
-            prefs["input_dir"] = input_dir
-            save_prefs(prefs)
-        if output_dir != saved_output_dir:
-            prefs["output_dir"] = output_dir
-            save_prefs(prefs)
 
         st.divider()
         st.caption("**Tip:** Jobs run in background - you can close this tab and check back later!")

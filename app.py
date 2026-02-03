@@ -35,6 +35,18 @@ OLLAMA_API_BASE = "http://localhost:11434/api"
 JOBS_DIR = Path(__file__).parent / "jobs"
 PREFS_FILE = Path(__file__).parent / ".user_prefs.json"
 
+# Default directories for batch processing
+DEFAULT_INPUT_DIR = str(
+    Path.home() / "Dropbox" /
+    "1. Kai Gao - Personal and Confidential - Dropbox" /
+    "Personal" / "Trading" / "Readings" / "Need Summaries"
+)
+DEFAULT_OUTPUT_DIR = str(
+    Path.home() / "Dropbox" /
+    "1. Kai Gao - Personal and Confidential - Dropbox" /
+    "Personal" / "Trading" / "Readings" / "Summaries"
+)
+
 # Ensure jobs directory exists
 JOBS_DIR.mkdir(exist_ok=True)
 
@@ -379,6 +391,155 @@ def is_worker_running() -> bool:
     except:
         return False
 
+
+def process_local_file(file_path: str, work_dir: str) -> Tuple[List[dict], str]:
+    """
+    Process a local PDF/EPUB file and return list of chapters with their text.
+    Returns: (chapters_list, error_message)
+    """
+    chapters = []
+    file_ext = Path(file_path).suffix.lower()
+    file_name = Path(file_path).stem
+    file_name_clean = re.sub(r'[^\w\-_]', '', file_name.replace(" ", "-"))
+
+    output_dir = os.path.join(work_dir, f"split_{file_name_clean}")
+    os.makedirs(output_dir, exist_ok=True)
+
+    try:
+        if file_ext == '.epub':
+            success = split_epub_by_sections(file_path, output_dir)
+            file_type = 'epub'
+            if not success:
+                extract_html_files(file_path, output_dir)
+                file_type = 'html'
+        elif file_ext == '.pdf':
+            pdf = pypdf.PdfReader(file_path)
+            toc = get_toc(pdf)
+            page_count = len(pdf.pages)
+
+            if toc:
+                page_ranges = prepare_page_ranges(toc, regex=None, overlap=False, page_count=page_count)
+                split_pdf(pdf, page_ranges, prefix=None, output_dir=output_dir)
+                file_type = 'pdf'
+            else:
+                # No ToC - treat whole PDF as one chapter
+                text = pdf_to_text(file_path)
+                chapters.append({
+                    'title': file_name,
+                    'text': text,
+                    'filename': Path(file_path).name
+                })
+                return chapters, ""
+        else:
+            return [], f"Unsupported file type: {file_ext}"
+
+        # Process split files
+        files = sorted(os.listdir(output_dir), key=natural_sort_key)
+        for filename in files:
+            filepath = os.path.join(output_dir, filename)
+
+            if file_type == 'html' and filename.endswith('.html'):
+                text = html_to_text(filepath)
+                title = get_title_from_html(filepath)
+            elif file_type == 'epub' and filename.endswith('.epub'):
+                text = epub_to_text(filepath)
+                try:
+                    book = epub.read_epub(filepath)
+                    title = book.get_metadata('DC', 'title')[0][0]
+                except:
+                    title = os.path.splitext(filename)[0]
+            elif file_type == 'pdf' and filename.endswith('.pdf'):
+                text = pdf_to_text(filepath)
+                title = os.path.splitext(filename)[0]
+            else:
+                continue
+
+            text = text.replace('\t', ' ').strip()
+            if title:
+                chapters.append({
+                    'title': title,
+                    'text': text,
+                    'filename': filename
+                })
+
+        return chapters, ""
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        return [], f"{str(e)}\n\nTraceback:\n{tb}"
+
+
+def get_files_in_directory(directory: str) -> List[str]:
+    """Get all PDF and EPUB files in a directory."""
+    if not os.path.isdir(directory):
+        return []
+
+    files = []
+    for filename in os.listdir(directory):
+        if filename.lower().endswith(('.pdf', '.epub')):
+            files.append(os.path.join(directory, filename))
+
+    return sorted(files, key=lambda f: os.path.basename(f).lower())
+
+
+def create_batch_jobs(files: List[str], model: str, prompt: str, style_alias: str,
+                      chunk_size: int, output_dir: str, fallback_style: str = None) -> List[str]:
+    """Create jobs for multiple files and return list of job IDs."""
+    job_ids = []
+
+    for file_path in files:
+        work_dir = tempfile.mkdtemp()
+        book_name = Path(file_path).stem
+
+        chapters, error = process_local_file(file_path, work_dir)
+
+        if error or not chapters:
+            continue
+
+        job_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{book_name[:30].replace(' ', '_')}"
+        job_dir = JOBS_DIR / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write job file with fallback info
+        job_data = {
+            "book_name": book_name,
+            "chapters": chapters,
+            "model": model,
+            "prompt": prompt,
+            "style_alias": style_alias,
+            "chunk_size": chunk_size,
+            "output_dir": output_dir,
+            "source_file": file_path,
+            "created_at": datetime.now().isoformat()
+        }
+
+        # Add fallback style if specified
+        if fallback_style:
+            job_data["fallback_prompt"] = PROMPTS[fallback_style]["prompt"]
+            job_data["fallback_alias"] = PROMPTS[fallback_style]["alias"]
+
+        with open(job_dir / "job.json", 'w') as f:
+            json.dump(job_data, f, indent=2)
+
+        # Write initial status
+        status_data = {
+            "state": "pending",
+            "created_at": datetime.now().isoformat(),
+            "progress_pct": 0,
+            "current_chapter": 0,
+            "total_chapters": len(chapters)
+        }
+
+        with open(job_dir / "status.json", 'w') as f:
+            json.dump(status_data, f, indent=2)
+
+        job_ids.append(job_id)
+
+        # Small delay to ensure unique timestamps
+        time.sleep(0.1)
+
+    return job_ids
+
 # -----------------------------
 # Streamlit App
 # -----------------------------
@@ -480,10 +641,39 @@ def main():
         )
 
         st.divider()
+
+        # Batch processing directories
+        st.header("Batch Directories")
+
+        # Load saved directories or use defaults
+        saved_input_dir = prefs.get("input_dir", DEFAULT_INPUT_DIR)
+        saved_output_dir = prefs.get("output_dir", DEFAULT_OUTPUT_DIR)
+
+        input_dir = st.text_input(
+            "Input Directory",
+            value=saved_input_dir,
+            help="Directory containing PDF/EPUB files to process"
+        )
+
+        output_dir = st.text_input(
+            "Output Directory",
+            value=saved_output_dir,
+            help="Directory where summaries will be saved"
+        )
+
+        # Save directory preferences when changed
+        if input_dir != saved_input_dir:
+            prefs["input_dir"] = input_dir
+            save_prefs(prefs)
+        if output_dir != saved_output_dir:
+            prefs["output_dir"] = output_dir
+            save_prefs(prefs)
+
+        st.divider()
         st.caption("**Tip:** Jobs run in background - you can close this tab and check back later!")
 
     # Create tabs for different views
-    tab1, tab2 = st.tabs(["📤 New Job", "📋 Job Queue"])
+    tab1, tab2, tab3 = st.tabs(["📤 New Job", "📁 Batch Process", "📋 Job Queue"])
 
     with tab1:
         # Main area - File upload
@@ -550,6 +740,84 @@ def main():
                     st.session_state.active_job = job_id
 
     with tab2:
+        st.subheader("Batch Processing")
+        st.caption("Process multiple documents from a directory")
+
+        # Show current directories
+        st.markdown(f"**Input:** `{input_dir}`")
+        st.markdown(f"**Output:** `{output_dir}`")
+
+        # Check if directories exist
+        input_valid = os.path.isdir(input_dir)
+        output_valid = os.path.isdir(output_dir)
+
+        if not input_valid:
+            st.error(f"Input directory does not exist: {input_dir}")
+        if not output_valid:
+            st.warning(f"Output directory does not exist and will be created: {output_dir}")
+
+        if input_valid:
+            # Get files in input directory
+            files = get_files_in_directory(input_dir)
+
+            if not files:
+                st.info("No PDF or EPUB files found in the input directory.")
+            else:
+                st.success(f"Found **{len(files)}** documents to process")
+
+                # Preview files
+                with st.expander("Preview Files", expanded=True):
+                    for i, f in enumerate(files, 1):
+                        size = os.path.getsize(f)
+                        st.write(f"**{i}.** {os.path.basename(f)} ({size:,} bytes)")
+
+                # Batch options
+                st.divider()
+                st.markdown("### Batch Options")
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    use_fallback = st.checkbox(
+                        "Use fallback style",
+                        value=True,
+                        help="If Trading Setups finds no setups, fall back to another style"
+                    )
+                with col2:
+                    fallback_style = st.selectbox(
+                        "Fallback Style",
+                        [s for s in PROMPTS.keys() if s != "Trading Setups"],
+                        index=0,  # Bulleted Notes
+                        disabled=not use_fallback
+                    )
+
+                # Start batch button
+                st.divider()
+                if st.button("🚀 Start Batch Processing", type="primary", use_container_width=True):
+                    if not is_worker_running():
+                        st.error("Worker is not running! Start it first with: `systemctl --user start ebook-worker`")
+                    else:
+                        # Create output directory if needed
+                        if not output_valid:
+                            os.makedirs(output_dir, exist_ok=True)
+
+                        with st.spinner(f"Creating {len(files)} jobs..."):
+                            job_ids = create_batch_jobs(
+                                files=files,
+                                model=selected_model,
+                                prompt=PROMPTS[prompt_style]["prompt"],
+                                style_alias=PROMPTS[prompt_style]["alias"],
+                                chunk_size=chunk_size,
+                                output_dir=output_dir,
+                                fallback_style=fallback_style if use_fallback else None
+                            )
+
+                        if job_ids:
+                            st.success(f"✅ Created {len(job_ids)} jobs!")
+                            st.info("Switch to **Job Queue** tab to monitor progress.")
+                        else:
+                            st.error("No jobs could be created. Check that files are valid PDF/EPUB documents.")
+
+    with tab3:
         st.subheader("Job Queue")
 
         # Refresh button

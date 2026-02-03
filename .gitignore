@@ -37,3 +37,6 @@ temp/
 *.md
 !README.md
 .user_prefs.json
+
+# Jobs directory (contains user data)
+jobs/

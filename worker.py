@@ -9,17 +9,16 @@ import json
 import time
 import signal
 import sys
+import shutil
 import requests
 from pathlib import Path
 from datetime import datetime
 
-# Configuration
-JOBS_DIR = Path(__file__).parent / "jobs"
-OLLAMA_API_BASE = "http://localhost:11434/api"
-POLL_INTERVAL = 2  # seconds
-
-# Ensure jobs directory exists
-JOBS_DIR.mkdir(exist_ok=True)
+# Import centralized configuration
+from config import (
+    JOBS_DIR, OLLAMA_API_BASE, POLL_INTERVAL,
+    MAX_RETRIES, RETRY_BASE_DELAY
+)
 
 # Graceful shutdown
 shutdown_requested = False
@@ -36,6 +35,37 @@ signal.signal(signal.SIGINT, signal_handler)
 def log(msg: str):
     """Print timestamped log message."""
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def is_model_available(model: str) -> bool:
+    """Check if the specified model is available in Ollama."""
+    try:
+        response = requests.get(
+            f"{OLLAMA_API_BASE.replace('/api', '')}/api/tags",
+            timeout=5
+        )
+        if response.status_code == 200:
+            models = [m["name"] for m in response.json().get("models", [])]
+            # Check exact match or match without tag (e.g., "mistral" matches "mistral:latest")
+            return model in models or any(m.startswith(model + ":") for m in models)
+    except Exception as e:
+        log(f"Error checking model availability: {e}")
+    return False
+
+
+def get_job_status(job_id: str) -> dict:
+    """Get current status of a job."""
+    status_file = JOBS_DIR / job_id / "status.json"
+    if status_file.exists():
+        with open(status_file, 'r') as f:
+            return json.load(f)
+    return {"state": "not_found"}
+
+
+def is_job_cancelled(job_id: str) -> bool:
+    """Check if a job has been cancelled."""
+    status = get_job_status(job_id)
+    return status.get("cancel_requested", False)
 
 
 def generate_summary(model: str, text: str, prompt: str) -> tuple[str, float]:
@@ -56,6 +86,31 @@ def generate_summary(model: str, text: str, prompt: str) -> tuple[str, float]:
         return output, elapsed
     except Exception as e:
         return f"Error: {str(e)}", time.time() - start_time
+
+
+def generate_summary_with_retry(model: str, text: str, prompt: str) -> tuple[str, float]:
+    """Generate summary with retry logic and exponential backoff."""
+    last_error = None
+    total_time = 0.0
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            result, elapsed = generate_summary(model, text, prompt)
+            total_time += elapsed
+            # Check if the result is an error message from generate_summary
+            if result.startswith("Error:"):
+                raise Exception(result)
+            return result, total_time
+        except Exception as e:
+            last_error = e
+            if attempt < MAX_RETRIES - 1:
+                delay = RETRY_BASE_DELAY * (2 ** attempt)
+                log(f"  Retry {attempt + 1}/{MAX_RETRIES} after {delay}s: {e}")
+                time.sleep(delay)
+                total_time += delay
+
+    # All retries failed
+    return f"Error after {MAX_RETRIES} retries: {last_error}", total_time
 
 
 def chunk_text(text: str, max_tokens: int = 2000) -> list[str]:
@@ -202,6 +257,57 @@ def has_trading_content(summaries: list) -> bool:
     return keyword_count >= 5
 
 
+def determine_prompt_with_sampling(job_id: str, chapters: list, model: str,
+                                   primary_prompt: str, fallback_prompt: str,
+                                   fallback_alias: str, chunk_size: int) -> tuple[str, str, bool]:
+    """
+    Sample first few chapters to determine if trading content exists.
+    Returns (prompt_to_use, style_alias_to_use, used_fallback).
+    """
+    SAMPLE_CHAPTERS = 3
+    SAMPLE_CHUNKS_PER_CHAPTER = 2
+
+    sample_chapters = chapters[:SAMPLE_CHAPTERS]
+    sample_summaries = []
+
+    log(f"  Sampling {len(sample_chapters)} chapters to detect trading content...")
+    update_job_status(job_id, message="Sampling chapters to detect content type...")
+
+    for ch in sample_chapters:
+        if shutdown_requested or is_job_cancelled(job_id):
+            break
+
+        chunks = chunk_text(ch.get("text", ""), chunk_size)
+        for chunk in chunks[:SAMPLE_CHUNKS_PER_CHAPTER]:
+            summary, _ = generate_summary_with_retry(model, chunk, primary_prompt)
+            sample_summaries.append(summary)
+
+    if has_trading_content(sample_summaries):
+        log(f"  Trading content detected, using trading prompt")
+        return primary_prompt, "trading", False
+    else:
+        log(f"  No trading content in sample, using fallback: {fallback_alias}")
+        return fallback_prompt, fallback_alias, True
+
+
+def move_source_file(source_file: str) -> str:
+    """Move source file to Processed subfolder. Returns new path."""
+    source = Path(source_file)
+    if not source.exists():
+        return source_file
+
+    processed_dir = source.parent / "Processed"
+    processed_dir.mkdir(exist_ok=True)
+    dest = processed_dir / source.name
+
+    try:
+        shutil.move(str(source), str(dest))
+        return str(dest)
+    except Exception as e:
+        log(f"  Warning: Could not move source file: {e}")
+        return source_file
+
+
 def process_job(job_id: str):
     """Process a single summarization job."""
     job_dir = JOBS_DIR / job_id
@@ -214,7 +320,22 @@ def process_job(job_id: str):
     with open(job_file, 'r') as f:
         job = json.load(f)
 
-    log(f"Processing job: {job_id} - {job.get('book_name', 'Unknown')}")
+    book_name = job.get("book_name", "Unknown")
+    log(f"Processing job: {job_id} - {book_name}")
+
+    # Check for cancellation before starting
+    if is_job_cancelled(job_id):
+        update_job_status(job_id, state="cancelled", message="Cancelled by user")
+        log(f"Job cancelled before starting: {job_id}")
+        return
+
+    # Validate model availability
+    model = job.get("model", "mistral")
+    if not is_model_available(model):
+        error_msg = f"Model '{model}' is not available in Ollama. Please check the model name or pull it first."
+        update_job_status(job_id, state="failed", message=error_msg)
+        log(f"Job failed - model unavailable: {model}")
+        return
 
     # Update status to running
     update_job_status(job_id,
@@ -228,14 +349,27 @@ def process_job(job_id: str):
     )
 
     chapters = job.get("chapters", [])
-    model = job.get("model", "mistral")
     prompt = job.get("prompt", "Summarize this text.")
     chunk_size = job.get("chunk_size", 2000)
-    book_name = job.get("book_name", "Unknown")
     style_alias = job.get("style_alias", "summary")
-    custom_output_dir = job.get("output_dir")  # Custom output directory from batch job
+    custom_output_dir = job.get("output_dir")
     fallback_prompt = job.get("fallback_prompt")
     fallback_alias = job.get("fallback_alias")
+    source_file = job.get("source_file")
+    move_after_processing = job.get("move_after_processing", False)
+
+    # Determine prompt using smart sampling for trading style with fallback
+    used_fallback = False
+    if fallback_prompt and style_alias == "trading":
+        prompt, style_alias, used_fallback = determine_prompt_with_sampling(
+            job_id, chapters, model, prompt, fallback_prompt, fallback_alias, chunk_size
+        )
+        if shutdown_requested or is_job_cancelled(job_id):
+            if is_job_cancelled(job_id):
+                update_job_status(job_id, state="cancelled", message="Cancelled by user")
+            else:
+                update_job_status(job_id, state="interrupted", message="Worker shutdown")
+            return
 
     # Count total chunks
     total_chunks = 0
@@ -246,11 +380,15 @@ def process_job(job_id: str):
 
     processed_chunks = 0
     chunk_times = []
-    all_chapter_summaries = []  # Keep track for fallback check
 
     for i, chapter in enumerate(chapters):
+        # Check for shutdown or cancellation
         if shutdown_requested:
             update_job_status(job_id, state="interrupted", message="Worker shutdown")
+            return
+        if is_job_cancelled(job_id):
+            update_job_status(job_id, state="cancelled", message="Cancelled by user")
+            log(f"Job cancelled during processing: {job_id}")
             return
 
         chapter_title = chapter.get("title", f"Chapter {i+1}")
@@ -267,11 +405,17 @@ def process_job(job_id: str):
         chapter_summaries = []
 
         for j, chunk in enumerate(chunks):
+            # Check for shutdown or cancellation between chunks
             if shutdown_requested:
                 update_job_status(job_id, state="interrupted", message="Worker shutdown")
                 return
+            if is_job_cancelled(job_id):
+                update_job_status(job_id, state="cancelled", message="Cancelled by user")
+                log(f"Job cancelled during processing: {job_id}")
+                return
 
-            summary, elapsed = generate_summary(model, chunk, prompt)
+            # Use retry wrapper for resilience
+            summary, elapsed = generate_summary_with_retry(model, chunk, prompt)
             chapter_summaries.append(summary)
             chunk_times.append(elapsed)
             processed_chunks += 1
@@ -290,79 +434,18 @@ def process_job(job_id: str):
 
         # Save chapter result immediately
         combined_summary = "\n\n".join(chapter_summaries)
-        all_chapter_summaries.append(combined_summary)
         save_partial_result(job_id, chapter_title, combined_summary)
         log(f"    Saved chapter {i+1}")
 
-    # Check if we need to use fallback (for trading style with no trading content)
-    used_fallback = False
-    if fallback_prompt and style_alias == "trading":
-        if not has_trading_content(all_chapter_summaries):
-            log(f"  No trading content found, using fallback style: {fallback_alias}")
-
-            # Clear previous results
-            results_file = job_dir / "results.json"
-            if results_file.exists():
-                results_file.unlink()
-
-            # Re-process with fallback prompt
-            update_job_status(job_id,
-                message=f"Re-processing with {fallback_alias} style...",
-                progress_pct=0,
-                processed_chunks=0
-            )
-
-            processed_chunks = 0
-            chunk_times = []
-
-            for i, chapter in enumerate(chapters):
-                if shutdown_requested:
-                    update_job_status(job_id, state="interrupted", message="Worker shutdown")
-                    return
-
-                chapter_title = chapter.get("title", f"Chapter {i+1}")
-                chapter_text = chapter.get("text", "")
-
-                log(f"  [Fallback] Chapter {i+1}/{len(chapters)}: {chapter_title[:50]}...")
-
-                update_job_status(job_id,
-                    current_chapter=i+1,
-                    current_chapter_title=f"[{fallback_alias}] {chapter_title}"
-                )
-
-                chunks = chunk_text(chapter_text, chunk_size)
-                chapter_summaries = []
-
-                for j, chunk in enumerate(chunks):
-                    if shutdown_requested:
-                        update_job_status(job_id, state="interrupted", message="Worker shutdown")
-                        return
-
-                    summary, elapsed = generate_summary(model, chunk, fallback_prompt)
-                    chapter_summaries.append(summary)
-                    chunk_times.append(elapsed)
-                    processed_chunks += 1
-
-                    avg_time = sum(chunk_times) / len(chunk_times)
-                    remaining = total_chunks - processed_chunks
-                    eta_seconds = avg_time * remaining
-
-                    update_job_status(job_id,
-                        processed_chunks=processed_chunks,
-                        progress_pct=int((processed_chunks / total_chunks) * 100),
-                        eta=format_time(eta_seconds) if remaining > 0 else "almost done",
-                        last_chunk_time=f"{elapsed:.1f}s"
-                    )
-
-                combined_summary = "\n\n".join(chapter_summaries)
-                save_partial_result(job_id, chapter_title, combined_summary)
-                log(f"    Saved chapter {i+1}")
-
-            style_alias = fallback_alias
-            used_fallback = True
-
     # Save final output
     output_path = save_final_output(job_id, book_name, style_alias, custom_output_dir)
+
+    # Move source file if requested
+    moved_to = None
+    if move_after_processing and source_file:
+        moved_to = move_source_file(source_file)
+        if moved_to != source_file:
+            log(f"  Moved source file to: {moved_to}")
 
     update_job_status(job_id,
         state="completed",
@@ -370,7 +453,8 @@ def process_job(job_id: str):
         progress_pct=100,
         eta="done",
         output_path=output_path,
-        used_fallback=used_fallback
+        used_fallback=used_fallback,
+        moved_source_to=moved_to
     )
 
     log(f"Job completed: {job_id} -> {output_path}")

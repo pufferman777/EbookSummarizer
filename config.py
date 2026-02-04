@@ -13,17 +13,9 @@ PREFS_FILE = BASE_DIR / ".user_prefs.json"
 OLLAMA_API_BASE = "http://localhost:11434/api"
 POLL_INTERVAL = 2  # seconds between worker polls
 
-# Default batch processing directories
-DEFAULT_INPUT_DIR = str(
-    Path.home() / "Dropbox" /
-    "1. Kai Gao - Personal and Confidential - Dropbox" /
-    "Personal" / "Trading" / "Readings" / "Need Summaries"
-)
-DEFAULT_OUTPUT_DIR = str(
-    Path.home() / "Dropbox" /
-    "1. Kai Gao - Personal and Confidential - Dropbox" /
-    "Personal" / "Trading" / "Readings" / "Summaries"
-)
+# Default directories (user can change in UI, saved to preferences)
+DEFAULT_INPUT_DIR = str(Path.home() / "Documents")
+DEFAULT_OUTPUT_DIR = str(Path.home() / "Documents" / "Summaries")
 
 # Retry configuration
 MAX_RETRIES = 3

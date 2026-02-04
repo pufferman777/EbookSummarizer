@@ -153,15 +153,8 @@ def format_time(seconds: float) -> str:
         return f"{hours}h {mins}m"
 
 
-def get_summaries_dir() -> Path:
-    """Get the summaries directory, trying Dropbox first, then Downloads."""
-    dropbox_summaries = (
-        Path.home() / "Dropbox" /
-        "1. Kai Gao - Personal and Confidential - Dropbox" /
-        "Personal" / "Trading" / "Readings" / "Summaries"
-    )
-    if dropbox_summaries.exists():
-        return dropbox_summaries
+def get_fallback_output_dir() -> Path:
+    """Fallback output directory if job doesn't specify one."""
     downloads = Path.home() / "Downloads"
     downloads.mkdir(exist_ok=True)
     return downloads
@@ -225,7 +218,7 @@ def save_final_output(job_id: str, book_name: str, style_alias: str, custom_outp
         output_dir = Path(custom_output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
     else:
-        output_dir = get_summaries_dir()
+        output_dir = get_fallback_output_dir()
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     filename = f"{book_name}_{style_alias}_{timestamp}.md"

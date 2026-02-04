@@ -196,7 +196,8 @@ def save_partial_result(job_id: str, chapter_title: str, summary: str):
         json.dump(results, f, indent=2)
 
 
-def save_final_output(job_id: str, book_name: str, style_alias: str, custom_output_dir: str = None) -> tuple[str, bool]:
+def save_final_output(job_id: str, book_name: str, style_alias: str,
+                      style_name: str = None, custom_output_dir: str = None) -> tuple[str, bool]:
     """
     Compile and save final output to specified or default directory.
     Returns: (filepath, used_fallback_dir)
@@ -230,9 +231,12 @@ def save_final_output(job_id: str, book_name: str, style_alias: str, custom_outp
     filename = f"{book_name}_{style_alias}_{timestamp}.md"
     filepath = output_dir / filename
 
+    # Use full style name in header if available, otherwise fall back to alias
+    display_style = style_name if style_name else style_alias
+
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write(f"# {book_name} - Summary\n\n")
-        f.write(f"*Style: {style_alias} | Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}*\n\n---\n\n")
+        f.write(f"*Style: {display_style} | Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}*\n\n---\n\n")
         f.write(content)
 
     return str(filepath), used_fallback_dir
@@ -351,9 +355,11 @@ def process_job(job_id: str):
     prompt = job.get("prompt", "Summarize this text.")
     chunk_size = job.get("chunk_size", 2000)
     style_alias = job.get("style_alias", "summary")
+    style_name = job.get("style_name", style_alias)  # Fall back to alias for older jobs
     custom_output_dir = job.get("output_dir")
     fallback_prompt = job.get("fallback_prompt")
     fallback_alias = job.get("fallback_alias")
+    fallback_name = job.get("fallback_name", fallback_alias)
     source_file = job.get("source_file")
     move_after_processing = job.get("move_after_processing", False)
 
@@ -363,6 +369,8 @@ def process_job(job_id: str):
         prompt, style_alias, used_fallback = determine_prompt_with_sampling(
             job_id, chapters, model, prompt, fallback_prompt, fallback_alias, chunk_size
         )
+        if used_fallback:
+            style_name = fallback_name  # Update display name to fallback
         if shutdown_requested or is_job_cancelled(job_id):
             if is_job_cancelled(job_id):
                 update_job_status(job_id, state="cancelled", message="Cancelled by user")
@@ -437,7 +445,9 @@ def process_job(job_id: str):
         log(f"    Saved chapter {i+1}")
 
     # Save final output
-    output_path, used_fallback_dir = save_final_output(job_id, book_name, style_alias, custom_output_dir)
+    output_path, used_fallback_dir = save_final_output(
+        job_id, book_name, style_alias, style_name, custom_output_dir
+    )
 
     # Move source file if requested
     moved_to = None

@@ -452,8 +452,8 @@ def get_files_in_directory(directory: str) -> List[str]:
 
 
 def create_batch_jobs(files: List[str], model: str, prompt: str, style_alias: str,
-                      chunk_size: int, output_dir: str, fallback_style: str = None,
-                      move_after_processing: bool = False,
+                      style_name: str, chunk_size: int, output_dir: str,
+                      fallback_style: str = None, move_after_processing: bool = False,
                       progress_callback=None) -> Tuple[List[str], List[Tuple[str, str]]]:
     """
     Create jobs for multiple files.
@@ -492,6 +492,7 @@ def create_batch_jobs(files: List[str], model: str, prompt: str, style_alias: st
                 "model": model,
                 "prompt": prompt,
                 "style_alias": style_alias,
+                "style_name": style_name,
                 "chunk_size": chunk_size,
                 "output_dir": output_dir,
                 "source_file": file_path,
@@ -503,6 +504,7 @@ def create_batch_jobs(files: List[str], model: str, prompt: str, style_alias: st
             if fallback_style:
                 job_data["fallback_prompt"] = PROMPTS[fallback_style]["prompt"]
                 job_data["fallback_alias"] = PROMPTS[fallback_style]["alias"]
+                job_data["fallback_name"] = fallback_style
 
             with open(job_dir / "job.json", 'w') as f:
                 json.dump(job_data, f, indent=2)
@@ -759,6 +761,7 @@ def main():
                         "model": selected_model,
                         "prompt": PROMPTS[primary_style]["prompt"],
                         "style_alias": PROMPTS[primary_style]["alias"],
+                        "style_name": primary_style,
                         "chunk_size": chunk_size,
                         "output_dir": output_dir,
                         "created_at": datetime.now().isoformat()
@@ -768,6 +771,7 @@ def main():
                     if use_fallback and fallback_style:
                         job_data["fallback_prompt"] = PROMPTS[fallback_style]["prompt"]
                         job_data["fallback_alias"] = PROMPTS[fallback_style]["alias"]
+                        job_data["fallback_name"] = fallback_style
 
                     with open(job_dir / "job.json", 'w') as f:
                         json.dump(job_data, f, indent=2)
@@ -860,6 +864,7 @@ def main():
                             model=selected_model,
                             prompt=PROMPTS[primary_style]["prompt"],
                             style_alias=PROMPTS[primary_style]["alias"],
+                            style_name=primary_style,
                             chunk_size=chunk_size,
                             output_dir=output_dir,
                             fallback_style=fallback_style if use_fallback else None,

@@ -113,12 +113,15 @@ loginctl enable-linger $USER
 
 | Style | Description |
 |-------|-------------|
-| **Trading Setups** | Extracts actionable trading setups, entry/exit criteria, patterns |
+| **Trading Setups** | Extracts technical setups: entry/exit criteria, patterns, indicators, price action |
+| **Trading Edge** | Extracts methods & strategies: fundamental analysis, macro, money flow, risk management, lessons learned |
 | **Bulleted Notes** | Comprehensive bulleted notes with headings and bold terms |
 | **Research Arguments** | Lists arguments made in the text |
 | **Concise Summary** | Condensed version of the content |
 | **Teacher Questions** | Questions that can be answered by readers |
 | **Key Quotes** | Notable quotes from the text |
+
+**Recommended for trading books:** Use "Trading Setups" with "Trading Edge" as fallback. The app will sample chapters to detect if the book has technical setups - if not, it automatically uses Trading Edge to extract methods and strategies instead.
 
 ## Recommended Models
 

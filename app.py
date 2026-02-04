@@ -50,6 +50,42 @@ For each setup found, provide:
 
 If the text doesn't contain trading setups, summarize any market insights or principles that could inform trading decisions."""
     },
+    "Trading Edge": {
+        "alias": "edge",
+        "prompt": """Extract actionable trading and investing knowledge from this text. Focus on methods, strategies, and lessons that could provide an edge in the markets.
+
+Look for and organize by category:
+
+**FUNDAMENTAL METHODS**
+- How to analyze companies, sectors, or economies
+- Valuation techniques and metrics to watch
+- What financial data matters and how to interpret it
+
+**MACRO & MONEY FLOW**
+- Economic indicators and how to use them
+- Central bank / Fed watching techniques
+- Sector rotation and money flow signals
+- Intermarket relationships (bonds, currencies, commodities)
+
+**RISK MANAGEMENT**
+- Position sizing rules or guidelines
+- When to cut losses / how to set stops
+- Portfolio management principles
+- How to handle drawdowns
+
+**MARKET WISDOM**
+- Lessons learned from experience or mistakes
+- Psychological insights for traders
+- What separates winners from losers
+- Timing and patience principles
+
+**SPECIFIC TECHNIQUES**
+- Any concrete methods or processes described
+- Step-by-step approaches mentioned
+- Tools or data sources recommended
+
+For each insight, include the context or reasoning if provided. Focus on actionable takeaways, not general platitudes."""
+    },
     "Bulleted Notes": {
         "alias": "bnotes",
         "prompt": "Write comprehensive bulleted notes summarizing the provided text, with headings and terms in bold."
@@ -632,11 +668,18 @@ def main():
 
         with col2:
             fallback_options = [s for s in prompt_styles if s != primary_style]
-            saved_fallback = prefs.get("fallback_style", fallback_options[0] if fallback_options else None)
+
+            # Default fallback: Trading Edge for Trading Setups, first option otherwise
+            if primary_style == "Trading Setups" and "Trading Edge" in fallback_options:
+                default_fallback = "Trading Edge"
+            else:
+                default_fallback = fallback_options[0] if fallback_options else None
+
+            saved_fallback = prefs.get("fallback_style", default_fallback)
             saved_use_fallback = prefs.get("use_fallback", primary_style == "Trading Setups")
 
             if saved_fallback not in fallback_options:
-                saved_fallback = fallback_options[0] if fallback_options else None
+                saved_fallback = default_fallback
 
             fallback_idx = fallback_options.index(saved_fallback) if saved_fallback in fallback_options else 0
 

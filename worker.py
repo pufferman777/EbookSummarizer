@@ -196,12 +196,15 @@ def save_partial_result(job_id: str, chapter_title: str, summary: str):
         json.dump(results, f, indent=2)
 
 
-def save_final_output(job_id: str, book_name: str, style_alias: str, custom_output_dir: str = None):
-    """Compile and save final output to specified or default directory."""
+def save_final_output(job_id: str, book_name: str, style_alias: str, custom_output_dir: str = None) -> tuple[str, bool]:
+    """
+    Compile and save final output to specified or default directory.
+    Returns: (filepath, used_fallback_dir)
+    """
     results_file = JOBS_DIR / job_id / "results.json"
 
     if not results_file.exists():
-        return None
+        return None, False
 
     with open(results_file, 'r') as f:
         results = json.load(f)
@@ -214,11 +217,14 @@ def save_final_output(job_id: str, book_name: str, style_alias: str, custom_outp
     content = "\n\n---\n\n".join(all_summaries)
 
     # Save to output directory (custom or default)
+    used_fallback_dir = False
     if custom_output_dir:
         output_dir = Path(custom_output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
     else:
         output_dir = get_fallback_output_dir()
+        used_fallback_dir = True
+        log(f"  Note: No output directory configured, using fallback: {output_dir}")
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     filename = f"{book_name}_{style_alias}_{timestamp}.md"
@@ -229,7 +235,7 @@ def save_final_output(job_id: str, book_name: str, style_alias: str, custom_outp
         f.write(f"*Style: {style_alias} | Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}*\n\n---\n\n")
         f.write(content)
 
-    return str(filepath)
+    return str(filepath), used_fallback_dir
 
 
 def has_trading_content(summaries: list) -> bool:
@@ -431,7 +437,7 @@ def process_job(job_id: str):
         log(f"    Saved chapter {i+1}")
 
     # Save final output
-    output_path = save_final_output(job_id, book_name, style_alias, custom_output_dir)
+    output_path, used_fallback_dir = save_final_output(job_id, book_name, style_alias, custom_output_dir)
 
     # Move source file if requested
     moved_to = None
@@ -447,6 +453,7 @@ def process_job(job_id: str):
         eta="done",
         output_path=output_path,
         used_fallback=used_fallback,
+        used_fallback_dir=used_fallback_dir,
         moved_source_to=moved_to
     )
 

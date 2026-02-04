@@ -1001,6 +1001,9 @@ def main():
                         if output_path:
                             st.caption(f"📁 Saved to: `{output_path}`")
 
+                        if job.get("used_fallback_dir"):
+                            st.warning("⚠️ Output directory was not configured - saved to fallback location (~/Downloads)")
+
                         if job.get("used_fallback"):
                             st.caption("📝 Used fallback style (no trading content found)")
 

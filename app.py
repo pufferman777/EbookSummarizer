@@ -676,6 +676,24 @@ def main():
                 prefs["chunk_size"] = chunk_size
                 save_prefs(prefs)
 
+        # Row 3: Output Directory (full width)
+        saved_output_dir = prefs.get("output_dir", DEFAULT_OUTPUT_DIR)
+        output_dir = st.text_input(
+            "Output Directory",
+            value=saved_output_dir,
+            help="Where summaries will be saved"
+        )
+
+        if output_dir != saved_output_dir:
+            prefs["output_dir"] = output_dir
+            save_prefs(prefs)
+
+        # Validate output directory
+        if os.path.isdir(output_dir):
+            st.caption(f"✓ Output directory exists")
+        else:
+            st.caption(f"⚠ Directory will be created when first job completes")
+
     # Create tabs for different views
     tab1, tab2, tab3 = st.tabs(["📤 New Job", "📁 Batch Process", "📋 Job Queue"])
 
@@ -742,6 +760,7 @@ def main():
                         "prompt": PROMPTS[primary_style]["prompt"],
                         "style_alias": PROMPTS[primary_style]["alias"],
                         "chunk_size": chunk_size,
+                        "output_dir": output_dir,
                         "created_at": datetime.now().isoformat()
                     }
 
@@ -772,52 +791,26 @@ def main():
         st.subheader("Batch Processing")
         st.caption("Process multiple documents from a directory")
 
-        # Directory configuration
-        st.markdown("### Directories")
-
-        # Load saved directories or use defaults
+        # Input directory configuration (batch-specific)
         saved_input_dir = prefs.get("input_dir", DEFAULT_INPUT_DIR)
-        saved_output_dir = prefs.get("output_dir", DEFAULT_OUTPUT_DIR)
 
         input_dir = st.text_input(
             "Input Directory",
             value=saved_input_dir,
-            help="Directory containing PDF/EPUB files to process",
-            key="batch_input_dir"
+            help="Directory containing PDF/EPUB files to process"
         )
 
-        output_dir = st.text_input(
-            "Output Directory",
-            value=saved_output_dir,
-            help="Directory where summaries will be saved",
-            key="batch_output_dir"
-        )
-
-        # Save directory preferences when changed
         if input_dir != saved_input_dir:
             prefs["input_dir"] = input_dir
             save_prefs(prefs)
-        if output_dir != saved_output_dir:
-            prefs["output_dir"] = output_dir
-            save_prefs(prefs)
 
-        # Check if directories exist
+        # Check input directory
         input_valid = os.path.isdir(input_dir)
-        output_valid = os.path.isdir(output_dir)
-
-        # Real-time validation feedback
-        col_val1, col_val2 = st.columns(2)
-        with col_val1:
-            if input_valid:
-                files_count = len(get_files_in_directory(input_dir))
-                st.success(f"Found {files_count} files")
-            else:
-                st.error("Directory not found")
-        with col_val2:
-            if output_valid:
-                st.success("Directory exists")
-            else:
-                st.warning("Will be created")
+        if input_valid:
+            files_count = len(get_files_in_directory(input_dir))
+            st.caption(f"✓ Found {files_count} files")
+        else:
+            st.caption("✗ Directory not found")
 
         if input_valid:
             # Get files in input directory
@@ -851,7 +844,7 @@ def main():
                         st.error("Worker is not running! Start it first with: `systemctl --user start ebook-worker`")
                     else:
                         # Create output directory if needed
-                        if not output_valid:
+                        if not os.path.isdir(output_dir):
                             os.makedirs(output_dir, exist_ok=True)
 
                         # Progress placeholder for batch creation
